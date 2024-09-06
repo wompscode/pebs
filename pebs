@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+
+# PEBS
+# 	Phoebe's Extensible Backup Script
+
+pebs_version="1.0"
+
+pebs_config="$HOME/.pebs.conf"
+pebs_debug=false
+pebs_startTime=$(date +'%d-%m-%Y %H:%M:%S')
+pebs_logStartTime=$(date +'%d-%m-%Y_%H%M%S')
+
+while getopts 'dc:h' opt; do
+  case "$opt" in
+    d)
+		pebs_debug=true
+	;;
+	c)
+		echo "[PEBS] Using config file $OPTARG.."
+		pebs_config="$OPTARG"
+    ;;
+    ?|h)
+		echo "PEBS $pebs_version"
+		echo " Phoebe's Extensible Backup Script"
+		echo " This script is made to be edited to fit the needs of the user, and typically will have no arguments provided."
+		echo "  -d: Run all test cases for PEBS. This will create 2 files and 1 folder in your home directory that can be removed after testing."
+		echo "  -c <config file, default: $HOME/.pebs.conf>: Specify a config file located at <config file>. If one does not exist in the location specified, a blank one will be made."
+		echo "    [HEADS UP]: PEBS config files are Bash scripts that are called from the main PEBS script. Please be conscious of this, and audit all config files before usage."
+		echo "Usage: $(basename "$0") [-d] [-c <config file>]"
+		exit 1
+    ;;
+  esac
+done
+
+if [[ ! -f "$pebs_config" ]]; then
+	echo "[PEBS] No PEBS config, creating blank one at $pebs_config."
+	cat <<'EOF' > "$pebs_config"
+# PEBS configuration:
+
+# Optional logging
+pebs_logging=true
+pebs_logdir=/tmp
+
+# Example:
+# 	backup "Visual Name" "/directory/or/file/to/backup" "/directory/to/backup/to" "backup_output_name_[current-time]"
+# [current-time] will expand to the current local time represented as "day-month-year_hourminutesecond".
+# Do not include a file extension, as PEBS will match the extension to the file, or if you are backing up a directory, will archive it as a tar.gz file.
+
+pebs_run() {
+	: # (You can ignore this, it's just here so bash doesn't get upset.)
+	# Place your backup list in here.
+}
+EOF
+fi
+
+source "$pebs_config"
+
+output() {
+	if [[ $pebs_logging == true ]]; then
+		echo "$1" | tee -a "$pebs_logdir"/pebs_"$pebs_logStartTime".log
+	else
+		echo "$1"
+	fi
+}
+
+output "[PEBS] PEBS started at ${pebs_startTime}"
+
+archive() {
+	if [[ $pebs_logging == true ]]; then
+		tar -czvf "$1" "$2" | tee -a "$pebs_logdir"/pebs_"$pebs_logStartTime".log
+	else
+		tar -czvf "$1" "$2"
+	fi
+}
+
+getFileExtension () {
+	# Modified from answer: https://stackoverflow.com/a/1403489
+ 	filename="${1##*/}"                      
+    base="${filename%.[^.]*}"                       
+    ext="${filename:${#base} + 1}"                  
+    if [[ -z "$base" && -n "$ext" ]]; then          
+        base=".$ext"
+        ext=""
+    fi
+	echo "$ext"
+}
+
+backup () {
+	# $1 is name
+	# $2 is the directory/file to backup
+	# $3 is where it should be backed up to
+	# $4 is the output file(name).
+	# 	Including an extension for the output is not necessary. PEBS will find the extension (if one is present), and use it.
+	
+	if [[ -z "$1" ]]; then
+		output "[ERROR] No arguments, skipping."
+		return 0		
+	elif [[ -z "$2" ]]; then
+		output "[$1] Missing file/directory to backup, skipping."
+		return 0		
+	elif [[ -z "$3" ]]; then
+		output "[$1] Missing backup output folder, skipping."
+		return 0		
+	elif [[ -z "$4" ]]; then
+		output "[$1] Missing backup output name, skipping."
+		return 0
+	fi
+
+	toBackup="${2/#\~/$HOME}"
+	backupTo="${3/#\~/$HOME}"
+
+	if [[ ! -d "$backupTo" ]]; then
+		output "[$1] Backup output folder doesn't exist, skipping."
+		return 0
+	fi
+	output "[$1] Starting backup.. "
+
+	fileName=${4/"[current-time]"/$(date +"%d-%m-%Y_%H%M%S")}
+	if [[ -d $toBackup ]]; then
+		output "[$1] Backing up directory ${toBackup} with name ${fileName}"
+		output "[$1] ${toBackup} is a directory, backing up with tar."
+
+		archive "$backupTo"/"$fileName".tar.gz "$toBackup"
+	elif [[ -f $toBackup ]]; then
+		output "[$1] Backing up file ${toBackup} with name ${fileName}"
+		output "[$1] ${toBackup} is a file, backing up without tar."
+
+		outputExtension=$(getFileExtension "$2")
+		if [[ -n "${outputExtension}" ]]; then
+			outputExtension=.$outputExtension
+		fi
+
+		output "[$1] Backing up to ${backupTo} with name ${fileName}"
+
+		cp "$toBackup" "$backupTo"/"$fileName""$outputExtension"
+	else
+		output "[$1] File/directory to backup doesn't exist, skipping."
+		return 0
+	fi
+}
+
+testCases() {
+	echo ""
+	echo "-- ! RUNNING PEBS TEST CASES ! --"
+	echo ""
+
+	echo "Creating dummy files, if they do not exist.."
+	if [[ ! -f "~/testToBackup.test" ]]; then echo "This is the first backup file. It has an extension." > ~/testToBackup.test; fi
+	if [[ ! -f "~/testTobackup2" ]]; then echo "This is the second backup file. It has no extension." > ~/testToBackup2; fi
+	if [[ ! -d "~/backupTest" ]]; then mkdir ~/backupTest; fi
+
+	# Test hidden files, should succeed.
+	backup "bashrc" "~/.bashrc" "~/backupTest" "bashrc_[current-time]" # Succeed
+
+	# Normal tests, should succeed.
+	backup "Test" "~/testToBackup.test" "~/backupTest" "testToBackup_[current-time]" # Succeed
+	backup "Test2" "~/testToBackup2" "~/backupTest" "testToBackup2_[current-time]" # Succeed
+
+	# Tests that should fail.
+	backup # Fail
+	backup "Test3" # Fail
+	backup "Test4" "~/testToBackup.test" # Fail
+	backup "Test5" "~/testToBackup.test" "~/backupTest" # Fail
+	backup "Test6" "~/testToBackupFake.test" "~/backupTest" "test6" # Fail
+	backup "Test7" "~/testToBackup.test" "~/backupTestg" "test6" # Fail
+
+	echo "[PEBS] Exiting.."
+	exit 0
+}
+
+if [[ $pebs_debug == true ]]; then testCases; fi
+
+pebs_run
+
+output "[PEBS] PEBS finished at $(date +'%d-%m-%Y %H:%M:%S')"
